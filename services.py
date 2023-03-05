@@ -15,8 +15,6 @@ from typing import Optional, List
 #  – Кому конкретно отправлено (имя канала или персоны)
 #  – Текст сообщения
 
-# НЕ ОБЯЗАТЕЛЬНО: Журнал сообщений должен иметь методы для записи в файл и загрузки истории при старте сервера
-
 EOS = b'\n'
 
 CHANNEL = 'channel'
@@ -38,6 +36,11 @@ class InfoMsgStatuses(Enum):
 
     CHANGE_CHAT = 'change_chat'
 
+    # change_chat private FIL
+    # change_chat private DIMA
+    # change_chat private MAX
+    # change_chat channel general
+
     @property
     def msg_bts(self) -> bytes:
         return self.value.encode()
@@ -48,19 +51,15 @@ class MessageItem:
     """
     Объект одного сообщения
     """
-    uuid: str  # TODO протестить создание UUID для каждого сообщения для того чтобы можно было ими управлять
-    dt: datetime  # Если время больше времени текущего - считаем что это сообщение отложенное и его можно отменить
+    uuid: str
+    dt: datetime
     creator: str
     destination_type: str
     destination_name: str
     message: str
     received_users: List  # Список пользователей которым данное сообщение было доставлено
 
-    # TODO
-    #   read_users: List – Список пользователей которые прочитали данное сообщение
-
     def serialize(self) -> str:
-
         msg = {
             'uuid': self.uuid,
             'creator': self.creator,
@@ -70,6 +69,20 @@ class MessageItem:
         }
 
         return json.dumps(msg)
+
+    def target(self, destination_type: str, destination_name: str, user_name: str) -> bool:
+        """
+        Check, if the connection fits with the message
+        """
+
+        if destination_type == CHANNEL:
+            if self.destination_type == CHANNEL and self.destination_name == destination_name:
+                return True
+        elif destination_type == PRIVATE:
+            if self.destination_type == PRIVATE and self.destination_name == user_name:
+                return True
+
+        return False
 
 
 class MessagePool:
@@ -94,9 +107,11 @@ class MessagePool:
         return item
 
     def get_messages(self,
-                     creator: Optional[str] = None,
                      destination_type: str = CHANNEL,
-                     destination_name: str = GENERAL
+                     destination_name: str = GENERAL,
+                     not_received_user: Optional[str] = None,
+                     creator: Optional[str] = None,
+                     not_from_creator: Optional[str] = None,
                      ) -> List[MessageItem]:
 
         """
@@ -104,16 +119,24 @@ class MessagePool:
         """
 
         now = datetime.now()
-        msgs = list(
-            filter(
-                lambda msg: msg.dt < now
-                            and msg.destination_type == destination_type
-                            and msg.destination_name == destination_name,
-                self.__pool
-            )
-        )
+        msgs = filter(lambda msg: msg.dt < now, self.__pool)
 
-        return msgs
+        if creator:
+            msgs = filter(lambda msg: msg.creator == creator, msgs)
+
+        if destination_type:
+            msgs = filter(lambda msg: msg.destination_type == destination_type, msgs)
+
+        if destination_name:
+            msgs = filter(lambda msg: msg.destination_name == destination_name, msgs)
+
+        if not_received_user:
+            msgs = filter(lambda msg: not_received_user not in msg.received_users, msgs)
+
+        if not_from_creator:
+            msgs = filter(lambda msg: not_from_creator != msg.creator, msgs)
+
+        return list(msgs)
 
 
 @dataclass
@@ -122,7 +145,7 @@ class ConnectionItem:
     Объект одного подключения
     """
     transport: BaseTransport
-    user_name: Optional[str]  # Имя пользователя
+    user_name: Optional[str]
     current_connection_type = CHANNEL
     current_connection_name = GENERAL
 
@@ -184,8 +207,7 @@ class ConnectionPool:
         sender = self.get_by_user_name(msg_item.creator)
         message = f'{InfoMsgStatuses.MESSAGE_FROM_SRV.value} {msg_item.serialize()}\n'.encode()
 
-        # FIXME  при рассылке сообщений необходимо учитывать чтобы сообщения отправлялись только тем
-        #  пользователям которые на данный момент находятся в одной комнате с пользователем
-        for connection in self.__pool:
-            if connection != sender:
-                connection.transport.write(message)
+        for conn in self.__pool:
+            if conn != sender:
+                if msg_item.target(conn.current_connection_type, conn.current_connection_name, conn.user_name):
+                    conn.transport.write(message)

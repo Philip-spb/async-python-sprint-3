@@ -15,7 +15,7 @@ class ChatClientProtocol(asyncio.Protocol):
         self.own_name = None
         self.transport = None
 
-        # По умолчанию подключаем пользователя к дефолтному каналу
+        # At the start, we connect a user to the default channel
         self.current_connection_type = CHANNEL
         self.current_connection_name = GENERAL
 
@@ -48,15 +48,35 @@ class ChatClientProtocol(asyncio.Protocol):
             self.statistic = json.loads(args[0])
 
         elif operator == InfoMsgStatuses.MESSAGE_FROM_SRV.value:
-            msg = json.loads(args[0])
+
+            try:
+                msg_text = args[0]
+            except IndexError:
+                # TODO log
+                return
+
+            msg = json.loads(msg_text)
             uuid = msg['uuid']
             creator = msg['creator']
             destination_type = msg['destination_type']
             destination_name = msg['destination_name']
 
-            # Если пользователь находится в нужном канале: печатаем сообщение
-            #  и сигнал сообщение о том что сообщение получено
-            if self.current_connection_type == destination_type and self.current_connection_name == destination_name:
+            # If a user situating at the correct channel - printing and sending a signal
+            #   about the message has been read
+
+            if (
+                    (
+                            destination_type == CHANNEL
+                            and self.current_connection_type == destination_type
+                            and self.current_connection_name == destination_name
+                    ) or
+                    (
+                            destination_type == PRIVATE
+                            and self.current_connection_type == destination_type
+                            and self.own_name == destination_name
+                            and self.current_connection_name == creator
+                    )
+            ):
                 message = msg['message']
                 print(f'[{creator}] {message}')
 
@@ -84,12 +104,6 @@ class Client:
         self.name_chosen = False
 
     def send(self, message: str = ''):
-
-        # data = ''
-        # if self.name_chosen:
-        #     data = f'{data}{InfoMsgStatuses.MESSAGE_FROM_CLIENT.value} '
-        #
-        # data = f'{data}{message}'.encode()
         self.transport.write(message.encode())
 
     def input_func(self):
@@ -113,11 +127,11 @@ class Client:
                     print('Wrong chat type')
 
             elif command == 'show_statistic':
-                # Показываем статистику
+                # TODO Показываем статистику
                 ...
 
             elif command == 'ban_user':
-                # Баним пользователя
+                # TODO Баним пользователя
                 ...
 
             else:
