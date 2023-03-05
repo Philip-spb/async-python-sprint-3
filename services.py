@@ -53,7 +53,7 @@ class MessageItem:
     destination_type: str
     destination_name: str
     message: str
-    received_users: List  # Список пользователей которым данное сообщение было доставлено
+    received_users: List
 
     def serialize(self) -> str:
         msg = {
@@ -111,7 +111,7 @@ class MessagePool:
                      ) -> List[MessageItem]:
 
         """
-        Получить все сообщения с заданными параметрами
+        Get all messages with given parameters
         """
 
         now = datetime.now()
@@ -247,7 +247,7 @@ class ConnectionPool:
 
     def send_message(self, msg_item: MessageItem) -> None:
         """
-        Отправляем текстовое сообщение всем участникам чата
+        Send the text message to all chat participants
         """
         sender = self.get_by_user_name(msg_item.creator)
         message = f'{InfoMsgStatuses.MESSAGE_FROM_SRV.value} {msg_item.serialize()}\n'.encode()
