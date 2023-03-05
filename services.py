@@ -1,19 +1,22 @@
 import json
-
+import logging
 from asyncio import BaseTransport
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import Optional, List
 
-# Нужен класс для списка сообщений
+logging.basicConfig(
+    level='INFO',
+    format='%(asctime)s %(name)-30s %(levelname)-8s %(message)s'
+)
 
-# Каждое сообщение должно иметь:
-#  – Дата/время отправки
-#  – Имя пользователя отправителя
-#  – Кому отправлено (канал или персона)
-#  – Кому конкретно отправлено (имя канала или персоны)
-#  – Текст сообщения
+BLOCK_INTERVAL = 60  # in minutes
+AVAILABLE_MSGS = 20
+COUNT_COMPLAINT_FOR_BAN = 3
+BAN_TIME = 4 * 60  # in minutes
+INIT_MSGS_CNT = 20  # count of initial messages for the new users
+TIME_OF_LIFE_DELIVERED_MESSAGES = 60  # in minutes
 
 EOS = b'\n'
 
@@ -26,20 +29,13 @@ class InfoMsgStatuses(Enum):
     CHOOSE_NAME = 'choose_name'
     NAME_ACCEPTED = 'name_accepted'
     NAME_REJECTED = 'name_rejected'
-
     GET_STATISTIC = 'get_statistic'
     SET_STATISTIC = 'set_statistic'
-
     MESSAGE_FROM_SRV = 'message_from_srv'
     MESSAGE_FROM_CLIENT = 'message_from_client'
     MESSAGE_APPROVE = 'message_approve'
-
     CHANGE_CHAT = 'change_chat'
-
-    # change_chat private FIL
-    # change_chat private DIMA
-    # change_chat private MAX
-    # change_chat channel general
+    BAN_USER = 'ban_user'
 
     @property
     def msg_bts(self) -> bytes:
@@ -138,20 +134,64 @@ class MessagePool:
 
         return list(msgs)
 
+    def delete_delivered_messages(self) -> int:
+        now = datetime.now()
+        msgs = filter(lambda msg:
+                      msg.dt + timedelta(minutes=TIME_OF_LIFE_DELIVERED_MESSAGES) < now
+                      and len(msg.received_users) > 0,
+                      self.__pool)
+
+        msgs_lst = list(msgs)
+        msgs_cnt = len(msgs_lst)
+
+        for msg in msgs_lst:
+            self.__pool.remove(msg)
+            del msg
+
+        return msgs_cnt
+
 
 @dataclass
 class ConnectionItem:
     """
-    Объект одного подключения
+    The instance of one connection
     """
     transport: BaseTransport
     user_name: Optional[str]
     current_connection_type = CHANNEL
     current_connection_name = GENERAL
+    ban_time: Optional[datetime] = None
+    banned_users = []  # Users who banned current user
+    msgs_sent = 0  # A count of messages sent in the default period
 
-    #  TODO
-    #   Список пользователей которые пожаловались на данного пользователя
-    #   Время, до которого пользователь забанен
+    def increment_msgs_sent(self):
+        self.msgs_sent += 1
+
+    def make_user_baned(self, who_send_ban: str) -> bool:
+        banned = False
+        self.banned_users.append(who_send_ban)
+
+        now = datetime.now()
+        if len(self.banned_users) >= COUNT_COMPLAINT_FOR_BAN:
+            self.banned_users = []
+            self.ban_time = now + timedelta(minutes=BAN_TIME)
+            banned = True
+
+        return banned
+
+    def can_send_message(self, is_general_channel: bool) -> (bool, Optional[str]):
+
+        now = datetime.now()
+        answer = (True, None)
+        if self.ban_time and self.ban_time > now:
+            answer = (False,
+                      f'You has been baned until `{self.ban_time.ctime()}` '
+                      f'and you can\'t send messages')
+        elif is_general_channel and self.msgs_sent >= AVAILABLE_MSGS:
+            error_msg = f'You have reached the limit of messages per {BLOCK_INTERVAL} minutes'
+            answer = (False, error_msg)
+
+        return answer
 
 
 class ConnectionPool:
@@ -171,7 +211,8 @@ class ConnectionPool:
         # For future, now channels are not maintain
         return list(
             set(
-                item.current_connection_name for item in self.__pool if item.current_connection_type == CHANNEL
+                item.current_connection_name for item in self.__pool
+                if item.current_connection_type == CHANNEL
             ))
 
     def get_all_transports(self) -> List[BaseTransport]:
@@ -200,6 +241,10 @@ class ConnectionPool:
         item = self.get_by_transport(transport)
         self.__pool.remove(item)
 
+    def clear_all_msgs_sent(self):
+        for conn in self.__pool:
+            conn.msgs_sent = 0
+
     def send_message(self, msg_item: MessageItem) -> None:
         """
         Отправляем текстовое сообщение всем участникам чата
@@ -209,5 +254,7 @@ class ConnectionPool:
 
         for conn in self.__pool:
             if conn != sender:
-                if msg_item.target(conn.current_connection_type, conn.current_connection_name, conn.user_name):
+                if msg_item.target(conn.current_connection_type,
+                                   conn.current_connection_name,
+                                   conn.user_name):
                     conn.transport.write(message)

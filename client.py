@@ -1,7 +1,11 @@
 import asyncio
 import json
+import logging
+from typing import List, Tuple
 
 from services import InfoMsgStatuses, CHANNEL, GENERAL, PRIVATE
+
+logger = logging.getLogger()
 
 
 # Хороший пример подключения клиента к серверу
@@ -11,7 +15,6 @@ class ChatClientProtocol(asyncio.Protocol):
     def __init__(self, on_con_lost, on_name_chosen):
         self.on_con_lost = on_con_lost
         self.on_name_chosen = on_name_chosen
-        self.statistic = None  # {'users': ['FIL', 'NIC'], 'channels': ['general']}
         self.own_name = None
         self.transport = None
 
@@ -19,10 +22,19 @@ class ChatClientProtocol(asyncio.Protocol):
         self.current_connection_type = CHANNEL
         self.current_connection_name = GENERAL
 
+    def get_statistics(self, stat: dict) -> List[Tuple]:
+        stat = [
+            ('Your own name', self.own_name,),
+            ('All users count', len(stat['users'])),
+            ('List of all users', ', '.join(stat['users'])),
+            ('List of all channels', ', '.join(stat['channels']))
+        ]
+        return stat
+
     def connection_made(self, transport):
         self.transport = transport
 
-    def data_received(self, data):
+    def data_received(self, data):  # noqa C901
         operator, *args = data.decode().strip().split(' ', 1)
 
         if operator == InfoMsgStatuses.CHOOSE_NAME.value:
@@ -34,7 +46,9 @@ class ChatClientProtocol(asyncio.Protocol):
         elif operator == InfoMsgStatuses.NAME_ACCEPTED.value:
             self.own_name = args[0]
             print(f'OK! Your name is {self.own_name}')
-            self.transport.write(InfoMsgStatuses.GET_STATISTIC.msg_bts)
+            print('To show statistics, write `get_statistic`')
+            print('To ban a user, write `ban_user USER_NAME`')
+            print('-' * 30)
             self.on_name_chosen.set_result(True)
 
         elif operator == InfoMsgStatuses.CHANGE_CHAT.value:
@@ -45,14 +59,20 @@ class ChatClientProtocol(asyncio.Protocol):
                   f'and connection name: {self.current_connection_name}')
 
         elif operator == InfoMsgStatuses.SET_STATISTIC.value:
-            self.statistic = json.loads(args[0])
+
+            print('-' * 30)
+            for text, value in self.get_statistics(json.loads(args[0])):
+                print(f'{text}: {value}')
+            print('To change to a private channel, write `change_chat private USER_NAME`')
+            print('To change to a channel, write `change_chat channel general`')
+            print('-' * 30)
 
         elif operator == InfoMsgStatuses.MESSAGE_FROM_SRV.value:
 
             try:
                 msg_text = args[0]
             except IndexError:
-                # TODO log
+                logger.error(f'Can\'t read message {data.decode()}')
                 return
 
             msg = json.loads(msg_text)
@@ -64,19 +84,16 @@ class ChatClientProtocol(asyncio.Protocol):
             # If a user situating at the correct channel - printing and sending a signal
             #   about the message has been read
 
-            if (
-                    (
-                            destination_type == CHANNEL
-                            and self.current_connection_type == destination_type
-                            and self.current_connection_name == destination_name
-                    ) or
-                    (
-                            destination_type == PRIVATE
-                            and self.current_connection_type == destination_type
-                            and self.own_name == destination_name
-                            and self.current_connection_name == creator
-                    )
-            ):
+            if ((
+                    destination_type == CHANNEL
+                    and self.current_connection_type == destination_type
+                    and self.current_connection_name == destination_name
+            ) or (
+                    destination_type == PRIVATE
+                    and self.current_connection_type == destination_type
+                    and self.own_name == destination_name
+                    and self.current_connection_name == creator
+            )):
                 message = msg['message']
                 print(f'[{creator}] {message}')
 
@@ -85,7 +102,10 @@ class ChatClientProtocol(asyncio.Protocol):
                     'user': self.own_name
                 }
 
-                approval_to_srv = f'{InfoMsgStatuses.MESSAGE_APPROVE.value} {json.dumps(msg_to_srv)}'.encode()
+                command = InfoMsgStatuses.MESSAGE_APPROVE.value
+                msg_to_srv = json.dumps(msg_to_srv)
+
+                approval_to_srv = f'{command} {msg_to_srv}'.encode()
                 self.transport.write(approval_to_srv)
 
         else:
@@ -126,13 +146,11 @@ class Client:
                 except (ValueError, AssertionError):
                     print('Wrong chat type')
 
-            elif command == 'show_statistic':
-                # TODO Показываем статистику
-                ...
+            elif command == InfoMsgStatuses.GET_STATISTIC.value:
+                self.send(InfoMsgStatuses.GET_STATISTIC.value)
 
-            elif command == 'ban_user':
-                # TODO Баним пользователя
-                ...
+            elif command == InfoMsgStatuses.BAN_USER.value:
+                self.send(message)
 
             else:
                 message = f'{InfoMsgStatuses.MESSAGE_FROM_CLIENT.value} {message}'
@@ -140,6 +158,7 @@ class Client:
 
     async def init_connection(self):
         loop = asyncio.get_running_loop()
+
         on_con_lost = loop.create_future()
         on_name_chosen = loop.create_future()
 
@@ -171,5 +190,18 @@ class Client:
 
 
 if __name__ == '__main__':
-    server = Client(server_host='127.0.0.1', server_port=8000)
+    print('Choose server host (by default 127.0.0.1)')
+    server_host = input()
+    print('Choose server port (by default 8000)')
+    server_port = input()
+
+    if not server_host:
+        server_host = '127.0.0.1'
+
+    if not server_port:
+        server_port = 8000
+    else:
+        server_port = int(server_port)
+
+    server = Client(server_host=server_host, server_port=server_port)
     server.connect()
