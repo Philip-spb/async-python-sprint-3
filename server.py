@@ -50,30 +50,31 @@ class ChatServerProtocol(asyncio.Protocol):
         text = data.decode().strip()
 
         if not conn.user_name:
+
             if text in CONNECTION_POOL.get_all_user_names():
                 self.transport.write(InfoMsgStatuses.NAME_REJECTED.msg_bts + EOS)
                 return
-            else:
-                conn.user_name = text
-                self.transport.write(InfoMsgStatuses.NAME_ACCEPTED.msg_bts + b' ' + data + EOS)
 
-                # At the first connection sending all messages to the user
-                if MSG_POOL.count:
-                    msgs = MSG_POOL.get_messages()
+            conn.user_name = text
+            self.transport.write(InfoMsgStatuses.NAME_ACCEPTED.msg_bts + b' ' + data + EOS)
 
-                    msg_to_client = msgs
-                    msgs_len = len(msgs)
-                    if msgs_len > INIT_MSGS_CNT:
+            # At the first connection sending all messages to the user
+            if MSG_POOL.count:
+                msgs = MSG_POOL.get_messages()
 
-                        # Send to the client only `INIT_MSGS_CNT` last messages
-                        msg_to_client = msgs[msgs_len - INIT_MSGS_CNT:]
-                        lost_messages = msgs[:msgs_len - INIT_MSGS_CNT]
-                        for msg in lost_messages:
-                            msg.received_users.append(conn.user_name)
+                msg_to_client = msgs
+                msgs_len = len(msgs)
+                if msgs_len > INIT_MSGS_CNT:
 
-                    for msg in msg_to_client:
-                        QUEUE.put_nowait((msg, self.transport))
-                return
+                    # Send to the client only `INIT_MSGS_CNT` last messages
+                    msg_to_client = msgs[msgs_len - INIT_MSGS_CNT:]
+                    lost_messages = msgs[:msgs_len - INIT_MSGS_CNT]
+                    for msg in lost_messages:
+                        msg.received_users.append(conn.user_name)
+
+                for msg in msg_to_client:
+                    QUEUE.put_nowait((msg, self.transport))
+            return
 
         operator, *args = data.decode().strip().split(' ', 1)
 

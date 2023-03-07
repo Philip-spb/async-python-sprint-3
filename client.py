@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import signal
 from typing import List, Tuple
 
 from services import InfoMsgStatuses, CHANNEL, GENERAL, PRIVATE
@@ -8,8 +9,13 @@ from services import InfoMsgStatuses, CHANNEL, GENERAL, PRIVATE
 logger = logging.getLogger()
 
 
-# Хороший пример подключения клиента к серверу
-# https://stackoverflow.com/a/69255838
+class GracefulExit(SystemExit):
+    code = 1
+
+
+def raise_graceful_exit():
+    raise GracefulExit()
+
 
 class ChatClientProtocol(asyncio.Protocol):
     def __init__(self, on_con_lost, on_name_chosen):
@@ -131,7 +137,11 @@ class Client:
         Функция для ввода текста в консоли
         """
         while True:
-            message = input()
+            try:
+                message = input()
+            except EOFError:
+                break
+
             command, *args = message.strip().split(' ', 1)
 
             if not self.name_chosen:
@@ -162,11 +172,17 @@ class Client:
         on_con_lost = loop.create_future()
         on_name_chosen = loop.create_future()
 
-        self.transport, _ = await loop.create_connection(
-            lambda: ChatClientProtocol(on_con_lost, on_name_chosen),
-            self.server_host,
-            self.server_port
-        )
+        try:
+            self.transport, _ = await loop.create_connection(
+                lambda: ChatClientProtocol(on_con_lost, on_name_chosen),
+                self.server_host,
+                self.server_port
+            )
+        except (ConnectionRefusedError, OSError):
+            print('ERROR')
+            print(f'Can\'t connect to the server {self.server_host}:{self.server_port}')
+            loop.stop()
+            return
 
         try:
             await on_name_chosen
@@ -180,12 +196,14 @@ class Client:
 
     def connect(self):
         loop = asyncio.get_event_loop()
+        loop.add_signal_handler(signal.SIGINT, raise_graceful_exit)
+        loop.add_signal_handler(signal.SIGTERM, raise_graceful_exit)
         loop.create_task(self.init_connection())
         loop.run_in_executor(None, self.input_func)
 
         try:
             loop.run_forever()
-        except KeyboardInterrupt:
+        except GracefulExit:
             pass
 
 
